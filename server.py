@@ -2,7 +2,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import websockets
 import asyncio
-from database import create_document, update_document, get_document, get_document_history, get_user_role, get_user_id_by_api_key, get_document_permission
+from database import create_document, update_document, get_document, get_document_history, get_user_role, get_user_id_by_api_key, get_document_permission, insert_operation, get_operations
 
 # RESTful API
 class DocumentAPIHandler(BaseHTTPRequestHandler):
@@ -85,7 +85,18 @@ async def handle_connection(websocket, path):
     document_id = path.split('/')[-1]
     async for message in websocket:
         data = json.loads(message)
-        if data.get('type') == 'update':
+        if data.get('type') == 'operation':
+            operation = data.get('operation')
+            # Get existing operations
+            existing_ops = get_operations(document_id)
+            # Transform the new operation against existing operations
+            for existing_op in existing_ops:
+                operation = transform_operation(operation, existing_op)
+            # Insert the transformed operation
+            insert_operation(document_id, operation['type'], operation['position'], operation['text'])
+            # Broadcast the operation to all connected clients
+            await websocket.send(json.dumps({'type': 'operation', 'operation': operation}))
+        elif data.get('type') == 'update':
             if not get_document_permission(document_id, user_id) or "edit" not in get_document_permission(document_id, user_id):
                 await websocket.send(json.dumps({'type': 'error', 'message': 'Permission denied'}))
                 continue
@@ -97,6 +108,25 @@ async def handle_connection(websocket, path):
                 continue
             content = get_document(document_id)
             await websocket.send(json.dumps({'type': 'content', 'content': content}))
+
+def transform_operation(op1, op2):
+    # op1: New operation
+    # op2: Existing operation
+    if op1['type'] == 'insert' and op2['type'] == 'insert':
+        if op1['position'] <= op2['position']:
+            op2['position'] += len(op1['text'])
+    elif op1['type'] == 'insert' and op2['type'] == 'delete':
+        if op1['position'] <= op2['position']:
+            op2['position'] += len(op1['text'])
+    elif op1['type'] == 'delete' and op2['type'] == 'insert':
+        if op1['position'] < op2['position']:
+            op2['position'] -= len(op1['text'])
+    elif op1['type'] == 'delete' and op2['type'] == 'delete':
+        if op1['position'] < op2['position']:
+            op2['position'] -= len(op1['text'])
+        elif op1['position'] == op2['position']:
+            op2['text'] = ''  # Both deletions cancel each other
+    return op2
 
 def run_http_server():
     server_address = ('', 8000)
@@ -114,3 +144,4 @@ if __name__ == '__main__':
     http_thread = threading.Thread(target=run_http_server)
     http_thread.start()
     asyncio.run(run_websocket_server())
+    
