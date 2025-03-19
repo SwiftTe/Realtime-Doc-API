@@ -2,11 +2,35 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import websockets
 import asyncio
-from database import create_document, update_document, get_document, get_document_history
+from database import create_document, update_document, get_document, get_document_history, get_user_role, get_user_id_by_api_key, get_document_permission
 
 # RESTful API
 class DocumentAPIHandler(BaseHTTPRequestHandler):
+    def authenticate(self):
+        api_key = self.headers.get('X-API-Key')
+        user_id = get_user_id_by_api_key(api_key)
+        if not user_id:
+            self.send_response(401)
+            self.end_headers()
+            self.wfile.write(b'Unauthorized')
+            return None
+        role = get_user_role(api_key)
+        return (user_id, role)
+
+    def check_permission(self, user_id, document_id, permission):
+        permission_level = get_document_permission(document_id, user_id)
+        return permission_level and permission in permission_level
+
     def do_POST(self):
+        user = self.authenticate()
+        if not user:
+            return
+        user_id, role = user
+        if not self.check_permission(user_id, 'doc1', 'edit'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(b'Forbidden')
+            return
         if self.path == '/documents':
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
@@ -24,6 +48,15 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
             self.wfile.write(b'Not Found')
 
     def do_GET(self):
+        user = self.authenticate()
+        if not user:
+            return
+        user_id, role = user
+        if not self.check_permission(user_id, 'doc1', 'view'):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(b'Forbidden')
+            return
         if self.path.startswith('/documents/'):
             document_id = self.path.split('/')[-1]
             content = get_document(document_id)
@@ -43,13 +76,25 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
 
 # WebSocket server for real-time collaboration
 async def handle_connection(websocket, path):
+    api_key = websocket.request_headers.get('X-API-Key')
+    user_id = get_user_id_by_api_key(api_key)
+    if not user_id:
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
     document_id = path.split('/')[-1]
     async for message in websocket:
         data = json.loads(message)
         if data.get('type') == 'update':
+            if not get_document_permission(document_id, user_id) or "edit" not in get_document_permission(document_id, user_id):
+                await websocket.send(json.dumps({'type': 'error', 'message': 'Permission denied'}))
+                continue
             update_document(document_id, data.get('content'))
             await websocket.send(json.dumps({'type': 'ack', 'message': 'Update received'}))
         elif data.get('type') == 'subscribe':
+            if not get_document_permission(document_id, user_id) or "view" not in get_document_permission(document_id, user_id):
+                await websocket.send(json.dumps({'type': 'error', 'message': 'Permission denied'}))
+                continue
             content = get_document(document_id)
             await websocket.send(json.dumps({'type': 'content', 'content': content}))
 
