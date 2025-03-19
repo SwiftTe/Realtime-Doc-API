@@ -42,6 +42,18 @@ CREATE TABLE IF NOT EXISTS document_permissions (
 )
 ''')
 
+# Create operations table
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS operations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id TEXT,
+    type TEXT,  # 'insert' or 'delete'
+    position INTEGER,
+    text TEXT,
+    timestamp TEXT
+)
+''')
+
 conn.commit()
 
 # Add a default admin user (for testing)
@@ -98,4 +110,11 @@ def set_document_permission(document_id, user_id, permission):
     cursor.execute('INSERT OR REPLACE INTO document_permissions VALUES (?, ?, ?)',(document_id, user_id, permission))
     conn.commit()
 
-    
+def insert_operation(document_id, operation_type, position, text):
+    cursor.execute('INSERT INTO operations (document_id, type, position, text, timestamp) VALUES (?, ?, ?, ?, ?)',
+                   (document_id, operation_type, position, text, datetime.now().isoformat()))
+    conn.commit()
+
+def get_operations(document_id):
+    cursor.execute('SELECT type, position, text FROM operations WHERE document_id = ? ORDER BY timestamp', (document_id,))
+    return cursor.fetchall()
