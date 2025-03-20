@@ -74,6 +74,9 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'Not Found')
 
+# Dictionary to track active users
+active_users = {}  # Format: {document_id: {user_id: websocket}}
+
 # WebSocket server for real-time collaboration
 async def handle_connection(websocket, path):
     api_key = websocket.request_headers.get('X-API-Key')
@@ -83,6 +86,20 @@ async def handle_connection(websocket, path):
         return
 
     document_id = path.split('/')[-1]
+    # Track active users
+    if document_id not in active_users:
+        active_users[document_id] = {}
+    active_users[document_id][user_id] = websocket
+
+    # Notify other users that this user has joined
+    for other_user_id, other_websocket in active_users[document_id].items():
+        if other_user_id != user_id:
+            try:
+                await other_websocket.send(json.dumps({'type': 'user_joined', 'user_id': user_id}))
+            except websockets.exceptions.ConnectionClosed:
+                # Handle cases where the other user disconnected
+                pass
+
     async for message in websocket:
         data = json.loads(message)
         if data.get('type') == 'operation':
@@ -95,19 +112,21 @@ async def handle_connection(websocket, path):
             # Insert the transformed operation
             insert_operation(document_id, operation['type'], operation['position'], operation['text'])
             # Broadcast the operation to all connected clients
-            await websocket.send(json.dumps({'type': 'operation', 'operation': operation}))
-        elif data.get('type') == 'update':
-            if not get_document_permission(document_id, user_id) or "edit" not in get_document_permission(document_id, user_id):
-                await websocket.send(json.dumps({'type': 'error', 'message': 'Permission denied'}))
-                continue
-            update_document(document_id, data.get('content'))
-            await websocket.send(json.dumps({'type': 'ack', 'message': 'Update received'}))
-        elif data.get('type') == 'subscribe':
-            if not get_document_permission(document_id, user_id) or "view" not in get_document_permission(document_id, user_id):
-                await websocket.send(json.dumps({'type': 'error', 'message': 'Permission denied'}))
-                continue
-            content = get_document(document_id)
-            await websocket.send(json.dumps({'type': 'content', 'content': content}))
+            for other_user_id, other_websocket in active_users[document_id].items():
+                try:
+                    await other_websocket.send(json.dumps({'type': 'operation', 'operation': operation}))
+                except websockets.exceptions.ConnectionClosed:
+                    # Handle cases where the other user disconnected
+                    pass
+
+    # Notify other users that this user has left
+    del active_users[document_id][user_id]
+    for other_user_id, other_websocket in active_users[document_id].items():
+        try:
+            await other_websocket.send(json.dumps({'type': 'user_left', 'user_id': user_id}))
+        except websockets.exceptions.ConnectionClosed:
+            # Handle cases where the other user disconnected
+            pass
 
 def transform_operation(op1, op2):
     # op1: New operation
