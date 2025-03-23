@@ -2,7 +2,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import websockets
 import asyncio
-from database import create_document, update_document, get_document, get_document_history, get_user_role, get_user_id_by_api_key, get_document_permission, insert_operation, get_operations
+from database import create_document, update_document, get_document, get_document_history, get_user_role, get_user_id_by_api_key, get_document_permission, insert_operation, get_operations, get_document_versions, restore_document_version, create_document_version
 
 # RESTful API
 class DocumentAPIHandler(BaseHTTPRequestHandler):
@@ -26,12 +26,49 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
         if not user:
             return
         user_id, role = user
-        if not self.check_permission(user_id, 'doc1', 'edit'):
-            self.send_response(403)
-            self.end_headers()
-            self.wfile.write(b'Forbidden')
-            return
-        if self.path == '/documents':
+        if self.path.startswith('/documents/'):
+            document_id = self.path.split('/')[-1]
+            if self.path.endswith('/restore'):
+                if not self.check_permission(user_id, document_id, 'edit'):
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(b'Forbidden')
+                    return
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length)
+                version_id = json.loads(post_data).get('version_id')
+                if restore_document_version(version_id):
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({'message': 'Document restored'}).encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b'Version not found')
+            else:
+                if not self.check_permission(user_id, document_id, 'edit'):
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(b'Forbidden')
+                    return
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length)
+                document_data = json.loads(post_data)
+                document_id = document_data.get('id')
+                content = document_data.get('content', '')
+                create_document(document_id, content)
+                create_document_version(document_id, content)
+                self.send_response(201)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'id': document_id}).encode())
+        elif self.path == '/documents':
+            if not self.check_permission(user_id, 'doc1', 'edit'):
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(b'Forbidden')
+                return
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
             document_data = json.loads(post_data)
@@ -52,23 +89,35 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
         if not user:
             return
         user_id, role = user
-        if not self.check_permission(user_id, 'doc1', 'view'):
-            self.send_response(403)
-            self.end_headers()
-            self.wfile.write(b'Forbidden')
-            return
         if self.path.startswith('/documents/'):
             document_id = self.path.split('/')[-1]
-            content = get_document(document_id)
-            if content:
+            if self.path.endswith('/versions'):
+                if not self.check_permission(user_id, document_id, 'view'):
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(b'Forbidden')
+                    return
+                versions = get_document_versions(document_id)
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({'content': content}).encode())
+                self.wfile.write(json.dumps(versions).encode())
             else:
-                self.send_response(404)
-                self.end_headers()
-                self.wfile.write(b'Document not found')
+                if not self.check_permission(user_id, document_id, 'view'):
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(b'Forbidden')
+                    return
+                content = get_document(document_id)
+                if content:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({'content': content}).encode())
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b'Document not found')
         else:
             self.send_response(404)
             self.end_headers()
@@ -163,4 +212,5 @@ if __name__ == '__main__':
     http_thread = threading.Thread(target=run_http_server)
     http_thread.start()
     asyncio.run(run_websocket_server())
+
     
