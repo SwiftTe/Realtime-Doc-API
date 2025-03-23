@@ -64,6 +64,15 @@ CREATE TABLE IF NOT EXISTS document_versions (
 )
 ''')
 
+# Create document_shares table
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS document_shares (
+    document_id TEXT,
+    user_id TEXT,
+    permission TEXT
+)
+''')
+
 conn.commit()
 
 # Add a default admin user (for testing)
@@ -147,3 +156,12 @@ def restore_document_version(version_id):
         conn.commit()
         return document_id
     return None
+
+def share_document(document_id, user_id, permission):
+    cursor.execute('INSERT INTO document_shares (document_id, user_id, permission) VALUES (?, ?, ?)',
+                   (document_id, user_id, permission))
+    conn.commit()
+
+def get_shared_documents(user_id):
+    cursor.execute('SELECT document_id, permission FROM document_shares WHERE user_id = ?', (user_id,))
+    return cursor.fetchall()
