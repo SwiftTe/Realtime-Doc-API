@@ -2,7 +2,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import websockets
 import asyncio
-from database import create_document, update_document, get_document, get_document_history, get_user_role, get_user_id_by_api_key, get_document_permission, insert_operation, get_operations, get_document_versions, restore_document_version, create_document_version
+from database import create_document, update_document, get_document, get_document_history, get_user_role, get_user_id_by_api_key, get_document_permission, insert_operation, get_operations, get_document_versions, restore_document_version, create_document_version, share_document, get_shared_documents
 
 # RESTful API
 class DocumentAPIHandler(BaseHTTPRequestHandler):
@@ -28,7 +28,23 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
         user_id, role = user
         if self.path.startswith('/documents/'):
             document_id = self.path.split('/')[-1]
-            if self.path.endswith('/restore'):
+            if self.path.endswith('/share'):
+                if not self.check_permission(user_id, document_id, 'share'):
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(b'Forbidden')
+                    return
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length)
+                share_data = json.loads(post_data)
+                shared_user_id = share_data.get('user_id')
+                permission = share_data.get('permission')
+                share_document(document_id, shared_user_id, permission)
+                self.send_response(201)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'message': 'Document shared'}).encode())
+            elif self.path.endswith('/restore'):
                 if not self.check_permission(user_id, document_id, 'edit'):
                     self.send_response(403)
                     self.end_headers()
@@ -118,6 +134,18 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
                     self.send_response(404)
                     self.end_headers()
                     self.wfile.write(b'Document not found')
+        elif self.path.startswith('/users/'):
+            user_id_path = self.path.split('/')[-2]
+            if self.path.endswith('/shared_documents') and user_id_path == str(user_id):
+                shared_documents = get_shared_documents(user_id)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(shared_documents).encode())
+            else:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b'Not Found')
         else:
             self.send_response(404)
             self.end_headers()
@@ -212,5 +240,5 @@ if __name__ == '__main__':
     http_thread = threading.Thread(target=run_http_server)
     http_thread.start()
     asyncio.run(run_websocket_server())
-
     
+
