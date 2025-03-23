@@ -54,6 +54,16 @@ CREATE TABLE IF NOT EXISTS operations (
 )
 ''')
 
+# Create document_versions table
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS document_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id TEXT,
+    content TEXT,
+    created_at TEXT
+)
+''')
+
 conn.commit()
 
 # Add a default admin user (for testing)
@@ -118,3 +128,22 @@ def insert_operation(document_id, operation_type, position, text):
 def get_operations(document_id):
     cursor.execute('SELECT type, position, text FROM operations WHERE document_id = ? ORDER BY timestamp', (document_id,))
     return cursor.fetchall()
+
+def create_document_version(document_id, content):
+    cursor.execute('INSERT INTO document_versions (document_id, content, created_at) VALUES (?, ?, ?)',
+                   (document_id, content, datetime.now().isoformat()))
+    conn.commit()
+
+def get_document_versions(document_id):
+    cursor.execute('SELECT id, content, created_at FROM document_versions WHERE document_id = ? ORDER BY created_at DESC', (document_id,))
+    return cursor.fetchall()
+
+def restore_document_version(version_id):
+    cursor.execute('SELECT document_id, content FROM document_versions WHERE id = ?', (version_id,))
+    row = cursor.fetchone()
+    if row:
+        document_id, content = row
+        cursor.execute('UPDATE documents SET content = ? WHERE id = ?', (content, document_id))
+        conn.commit()
+        return document_id
+    return None
