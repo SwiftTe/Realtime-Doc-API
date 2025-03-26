@@ -2,7 +2,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import websockets
 import asyncio
-from database import create_document, update_document, get_document, get_document_history, get_user_role, get_user_id_by_api_key, get_document_permission, insert_operation, get_operations, get_document_versions, restore_document_version, create_document_version, share_document, get_shared_documents
+from database import create_document, update_document, get_document, get_document_history, get_user_role, get_user_id_by_api_key, get_document_permission, insert_operation, get_operations, get_document_versions, restore_document_version, create_document_version, share_document, get_shared_documents, conn, cursor
+import jwt
+from datetime import datetime, timedelta
+
+SECRET_KEY = "your-secret-key"  # Replace with a strong key in production
 
 # RESTful API
 class DocumentAPIHandler(BaseHTTPRequestHandler):
@@ -22,48 +26,99 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
         return permission_level and permission in permission_level
 
     def do_POST(self):
-        user = self.authenticate()
-        if not user:
-            return
-        user_id, role = user
-        if self.path.startswith('/documents/'):
-            document_id = self.path.split('/')[-1]
-            if self.path.endswith('/share'):
-                if not self.check_permission(user_id, document_id, 'share'):
-                    self.send_response(403)
-                    self.end_headers()
-                    self.wfile.write(b'Forbidden')
-                    return
-                content_length = int(self.headers['Content-Length'])
-                post_data = self.rfile.read(content_length)
-                share_data = json.loads(post_data)
-                shared_user_id = share_data.get('user_id')
-                permission = share_data.get('permission')
-                share_document(document_id, shared_user_id, permission)
-                self.send_response(201)
+        if self.path == '/register':
+            # Extract username/password from request
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            user_data = json.loads(post_data)
+            # Hash password (use bcrypt in production) and store user in DB
+            cursor.execute('INSERT INTO users (username, password) VALUES (?, ?)',
+                           (user_data['username'], user_data['password']))
+            conn.commit()
+            self.send_response(201)
+            self.end_headers()
+
+        elif self.path == '/login':
+            # Verify credentials
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            user_data = json.loads(post_data)
+            cursor.execute('SELECT id FROM users WHERE username = ? AND password = ?',
+                           (user_data['username'], user_data['password']))
+            user = cursor.fetchone()
+            if user:
+                # Generate JWT token
+                token = jwt.encode({
+                    'user_id': user[0],
+                    'exp': datetime.utcnow() + timedelta(hours=1)
+                }, SECRET_KEY)
+                self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(json.dumps({'message': 'Document shared'}).encode())
-            elif self.path.endswith('/restore'):
-                if not self.check_permission(user_id, document_id, 'edit'):
-                    self.send_response(403)
-                    self.end_headers()
-                    self.wfile.write(b'Forbidden')
-                    return
-                content_length = int(self.headers['Content-Length'])
-                post_data = self.rfile.read(content_length)
-                version_id = json.loads(post_data).get('version_id')
-                if restore_document_version(version_id):
-                    self.send_response(200)
+                self.wfile.write(json.dumps({'token': token}).encode())
+            else:
+                self.send_response(401)
+                self.end_headers()
+        else:
+            user = self.authenticate()
+            if not user:
+                return
+            user_id, role = user
+            if self.path.startswith('/documents/'):
+                document_id = self.path.split('/')[-1]
+                if self.path.endswith('/share'):
+                    if not self.check_permission(user_id, document_id, 'share'):
+                        self.send_response(403)
+                        self.end_headers()
+                        self.wfile.write(b'Forbidden')
+                        return
+                    content_length = int(self.headers['Content-Length'])
+                    post_data = self.rfile.read(content_length)
+                    share_data = json.loads(post_data)
+                    shared_user_id = share_data.get('user_id')
+                    permission = share_data.get('permission')
+                    share_document(document_id, shared_user_id, permission)
+                    self.send_response(201)
                     self.send_header('Content-Type', 'application/json')
                     self.end_headers()
-                    self.wfile.write(json.dumps({'message': 'Document restored'}).encode())
+                    self.wfile.write(json.dumps({'message': 'Document shared'}).encode())
+                elif self.path.endswith('/restore'):
+                    if not self.check_permission(user_id, document_id, 'edit'):
+                        self.send_response(403)
+                        self.end_headers()
+                        self.wfile.write(b'Forbidden')
+                        return
+                    content_length = int(self.headers['Content-Length'])
+                    post_data = self.rfile.read(content_length)
+                    version_id = json.loads(post_data).get('version_id')
+                    if restore_document_version(version_id):
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps({'message': 'Document restored'}).encode())
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                        self.wfile.write(b'Version not found')
                 else:
-                    self.send_response(404)
+                    if not self.check_permission(user_id, document_id, 'edit'):
+                        self.send_response(403)
+                        self.end_headers()
+                        self.wfile.write(b'Forbidden')
+                        return
+                    content_length = int(self.headers['Content-Length'])
+                    post_data = self.rfile.read(content_length)
+                    document_data = json.loads(post_data)
+                    document_id = document_data.get('id')
+                    content = document_data.get('content', '')
+                    create_document(document_id, content)
+                    create_document_version(document_id, content)
+                    self.send_response(201)
+                    self.send_header('Content-Type', 'application/json')
                     self.end_headers()
-                    self.wfile.write(b'Version not found')
-            else:
-                if not self.check_permission(user_id, document_id, 'edit'):
+                    self.wfile.write(json.dumps({'id': document_id}).encode())
+            elif self.path == '/documents':
+                if not self.check_permission(user_id, 'doc1', 'edit'):
                     self.send_response(403)
                     self.end_headers()
                     self.wfile.write(b'Forbidden')
@@ -74,31 +129,14 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
                 document_id = document_data.get('id')
                 content = document_data.get('content', '')
                 create_document(document_id, content)
-                create_document_version(document_id, content)
                 self.send_response(201)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps({'id': document_id}).encode())
-        elif self.path == '/documents':
-            if not self.check_permission(user_id, 'doc1', 'edit'):
-                self.send_response(403)
+            else:
+                self.send_response(404)
                 self.end_headers()
-                self.wfile.write(b'Forbidden')
-                return
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            document_data = json.loads(post_data)
-            document_id = document_data.get('id')
-            content = document_data.get('content', '')
-            create_document(document_id, content)
-            self.send_response(201)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({'id': document_id}).encode())
-        else:
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b'Not Found')
+                self.wfile.write(b'Not Found')
 
     def do_GET(self):
         user = self.authenticate()
@@ -240,5 +278,3 @@ if __name__ == '__main__':
     http_thread = threading.Thread(target=run_http_server)
     http_thread.start()
     asyncio.run(run_websocket_server())
-    
-
