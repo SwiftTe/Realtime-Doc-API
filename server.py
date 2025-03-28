@@ -190,7 +190,7 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
             self.wfile.write(b'Not Found')
 
 # Dictionary to track active users
-active_users = {}  # Format: {document_id: {user_id: websocket}}
+active_users = {}  # Format: {document_id: {user_id: {'websocket': websocket, 'cursor_pos': 0}}}
 
 # WebSocket server for real-time collaboration
 async def handle_connection(websocket, path):
@@ -201,16 +201,19 @@ async def handle_connection(websocket, path):
         return
 
     document_id = path.split('/')[-1]
-    # Track active users
+    # Track active users and their cursors
     if document_id not in active_users:
         active_users[document_id] = {}
-    active_users[document_id][user_id] = websocket
+    active_users[document_id][user_id] = {
+        'websocket': websocket,
+        'cursor_pos': 0
+    }
 
     # Notify other users that this user has joined
-    for other_user_id, other_websocket in active_users[document_id].items():
+    for other_user_id, other_websocket_data in active_users[document_id].items():
         if other_user_id != user_id:
             try:
-                await other_websocket.send(json.dumps({'type': 'user_joined', 'user_id': user_id}))
+                await other_websocket_data['websocket'].send(json.dumps({'type': 'user_joined', 'user_id': user_id}))
             except websockets.exceptions.ConnectionClosed:
                 # Handle cases where the other user disconnected
                 pass
@@ -227,18 +230,32 @@ async def handle_connection(websocket, path):
             # Insert the transformed operation
             insert_operation(document_id, operation['type'], operation['position'], operation['text'])
             # Broadcast the operation to all connected clients
-            for other_user_id, other_websocket in active_users[document_id].items():
+            for other_user_id, other_websocket_data in active_users[document_id].items():
                 try:
-                    await other_websocket.send(json.dumps({'type': 'operation', 'operation': operation}))
+                    await other_websocket_data['websocket'].send(json.dumps({'type': 'operation', 'operation': operation}))
                 except websockets.exceptions.ConnectionClosed:
                     # Handle cases where the other user disconnected
                     pass
+        elif data.get('type') == 'cursor_update':
+            active_users[document_id][user_id]['cursor_pos'] = data['position']
+            # Broadcast to all other users
+            for other_user_id, other_websocket_data in active_users[document_id].items():
+                if other_user_id != user_id:
+                    try:
+                        await other_websocket_data['websocket'].send(json.dumps({
+                            'type': 'cursor_update',
+                            'user_id': user_id,
+                            'position': data['position']
+                        }))
+                    except websockets.exceptions.ConnectionClosed:
+                        # Handle cases where the other user disconnected
+                        pass
 
     # Notify other users that this user has left
     del active_users[document_id][user_id]
-    for other_user_id, other_websocket in active_users[document_id].items():
+    for other_user_id, other_websocket_data in active_users[document_id].items():
         try:
-            await other_websocket.send(json.dumps({'type': 'user_left', 'user_id': user_id}))
+            await other_websocket_data['websocket'].send(json.dumps({'type': 'user_left', 'user_id': user_id}))
         except websockets.exceptions.ConnectionClosed:
             # Handle cases where the other user disconnected
             pass
@@ -278,3 +295,4 @@ if __name__ == '__main__':
     http_thread = threading.Thread(target=run_http_server)
     http_thread.start()
     asyncio.run(run_websocket_server())
+    
