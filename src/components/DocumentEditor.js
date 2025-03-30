@@ -2,11 +2,28 @@ import React, { useEffect, useState } from 'react';
 import axios from 'axios';
 import { w3cwebsocket as W3CWebSocket } from 'websocket';
 
+const CursorOverlay = ({ otherCursors }) => {
+  return (
+    <div className="cursor-overlay">
+      {Object.entries(otherCursors).map(([userId, position]) => (
+        <div
+          key={userId}
+          className="other-cursor"
+          style={{ position: 'absolute', left: `${position * 8}px`, top: '0px' }} // Adjust styling as needed
+        >
+          {userId}
+        </div>
+      ))}
+    </div>
+  );
+};
+
 const DocumentEditor = ({ documentId }) => {
   const [content, setContent] = useState('');
   const [socket, setSocket] = useState(null);
   const [shareEmail, setShareEmail] = useState('');
   const [sharePermission, setSharePermission] = useState('view');
+  const [otherCursors, setOtherCursors] = useState({});
 
   useEffect(() => {
     // Fetch the document content
@@ -21,6 +38,11 @@ const DocumentEditor = ({ documentId }) => {
       const data = JSON.parse(message.data);
       if (data.type === 'operation') {
         setContent(prevContent => applyOperation(prevContent, data.operation));
+      } else if (data.type === 'cursor_update') {
+        setOtherCursors(prev => ({
+          ...prev,
+          [data.user_id]: data.position
+        }));
       }
     };
     setSocket(ws);
@@ -54,11 +76,25 @@ const DocumentEditor = ({ documentId }) => {
     }
   };
 
-  return (
-    <div>
-      <h2>Edit Document</h2>
-      <textarea value={content} onChange={handleChange} />
+  const handleSelectionChange = (e) => {
+    if (socket) {
+      const cursorPos = e.target.selectionStart;
+      socket.send(JSON.stringify({
+        type: 'cursor_update',
+        position: cursorPos
+      }));
+    }
+  };
 
+  return (
+    <div className="editor-container">
+      <h2>Edit Document</h2>
+      <textarea
+        value={content}
+        onChange={handleChange}
+        onSelect={handleSelectionChange}
+      />
+      <CursorOverlay otherCursors={otherCursors} />
       <div>
         <h3>Share Document</h3>
         <input
@@ -78,3 +114,5 @@ const DocumentEditor = ({ documentId }) => {
 };
 
 export default DocumentEditor;
+
+
