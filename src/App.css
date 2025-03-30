@@ -15,4 +15,21 @@
     background: rgba(255, 0, 0, 0.2);
     padding: 2px;
   }
+
+  /* App.css */
+  .collaborators {
+    display: flex;
+    gap: 8px;
+    padding: 10px;
+  }
   
+  .user-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+  }
