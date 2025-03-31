@@ -5,10 +5,11 @@ import asyncio
 from database import create_document, update_document, get_document, get_document_history, get_user_role, get_user_id_by_api_key, get_document_permission, insert_operation, get_operations, get_document_versions, restore_document_version, create_document_version, share_document, get_shared_documents, conn, cursor
 import jwt
 from datetime import datetime, timedelta
+import redis
 
-SECRET_KEY = "your-secret-key"  # Replace with a strong key in production
+SECRET_KEY = "your-secret-key"
+r = redis.Redis(host='localhost', port=6379, db=1)
 
-# RESTful API
 class DocumentAPIHandler(BaseHTTPRequestHandler):
     def authenticate(self):
         api_key = self.headers.get('X-API-Key')
@@ -27,11 +28,9 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == '/register':
-            # Extract username/password from request
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
             user_data = json.loads(post_data)
-            # Hash password (use bcrypt in production) and store user in DB
             cursor.execute('INSERT INTO users (username, password) VALUES (?, ?)',
                            (user_data['username'], user_data['password']))
             conn.commit()
@@ -39,7 +38,6 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
             self.end_headers()
 
         elif self.path == '/login':
-            # Verify credentials
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
             user_data = json.loads(post_data)
@@ -47,7 +45,6 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
                            (user_data['username'], user_data['password']))
             user = cursor.fetchone()
             if user:
-                # Generate JWT token
                 token = jwt.encode({
                     'user_id': user[0],
                     'exp': datetime.utcnow() + timedelta(hours=1)
@@ -189,10 +186,8 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'Not Found')
 
-# Dictionary to track active users
-active_users = {}  # Format: {document_id: {user_id: {'websocket': websocket, 'cursor_pos': 0}}}
+active_users = {}
 
-# WebSocket server for real-time collaboration
 async def handle_connection(websocket, path):
     api_key = websocket.request_headers.get('X-API-Key')
     user_id = get_user_id_by_api_key(api_key)
@@ -201,7 +196,17 @@ async def handle_connection(websocket, path):
         return
 
     document_id = path.split('/')[-1]
-    # Track active users and their cursors
+
+    r.sadd(f"doc:{document_id}:users", user_id)
+    r.expire(f"doc:{document_id}:users", 30)
+
+    await broadcast({
+        'type': 'presence',
+        'event': 'join',
+        'user_id': user_id,
+        'users': [uid.decode() for uid in r.smembers(f"doc:{document_id}:users")]
+    }, document_id)
+
     if document_id not in active_users:
         active_users[document_id] = {}
     active_users[document_id][user_id] = {
@@ -209,36 +214,30 @@ async def handle_connection(websocket, path):
         'cursor_pos': 0
     }
 
-    # Notify other users that this user has joined
     for other_user_id, other_websocket_data in active_users[document_id].items():
         if other_user_id != user_id:
             try:
                 await other_websocket_data['websocket'].send(json.dumps({'type': 'user_joined', 'user_id': user_id}))
             except websockets.exceptions.ConnectionClosed:
-                # Handle cases where the other user disconnected
                 pass
+
+    heartbeat = asyncio.create_task(send_heartbeat(websocket, user_id, document_id))
 
     async for message in websocket:
         data = json.loads(message)
         if data.get('type') == 'operation':
             operation = data.get('operation')
-            # Get existing operations
             existing_ops = get_operations(document_id)
-            # Transform the new operation against existing operations
             for existing_op in existing_ops:
                 operation = transform_operation(operation, existing_op)
-            # Insert the transformed operation
             insert_operation(document_id, operation['type'], operation['position'], operation['text'])
-            # Broadcast the operation to all connected clients
             for other_user_id, other_websocket_data in active_users[document_id].items():
                 try:
                     await other_websocket_data['websocket'].send(json.dumps({'type': 'operation', 'operation': operation}))
                 except websockets.exceptions.ConnectionClosed:
-                    # Handle cases where the other user disconnected
                     pass
         elif data.get('type') == 'cursor_update':
             active_users[document_id][user_id]['cursor_pos'] = data['position']
-            # Broadcast to all other users
             for other_user_id, other_websocket_data in active_users[document_id].items():
                 if other_user_id != user_id:
                     try:
@@ -248,21 +247,38 @@ async def handle_connection(websocket, path):
                             'position': data['position']
                         }))
                     except websockets.exceptions.ConnectionClosed:
-                        # Handle cases where the other user disconnected
                         pass
 
-    # Notify other users that this user has left
     del active_users[document_id][user_id]
     for other_user_id, other_websocket_data in active_users[document_id].items():
         try:
             await other_websocket_data['websocket'].send(json.dumps({'type': 'user_left', 'user_id': user_id}))
         except websockets.exceptions.ConnectionClosed:
-            # Handle cases where the other user disconnected
+            pass
+
+    heartbeat.cancel()
+    r.srem(f"doc:{document_id}:users", user_id)
+    await broadcast({
+        'type': 'presence',
+        'event': 'leave',
+        'user_id': user_id,
+        'users': [uid.decode() for uid in r.smembers(f"doc:{document_id}:users")]
+    }, document_id)
+
+async def send_heartbeat(websocket, user_id, doc_id):
+    while True:
+        await asyncio.sleep(20)
+        r.sadd(f"doc:{doc_id}:users", user_id)
+        r.expire(f"doc:{doc_id}:users", 30)
+
+async def broadcast(message, document_id):
+    for user_id, user_data in active_users[document_id].items():
+        try:
+            await user_data['websocket'].send(json.dumps(message))
+        except websockets.exceptions.ConnectionClosed:
             pass
 
 def transform_operation(op1, op2):
-    # op1: New operation
-    # op2: Existing operation
     if op1['type'] == 'insert' and op2['type'] == 'insert':
         if op1['position'] <= op2['position']:
             op2['position'] += len(op1['text'])
@@ -276,7 +292,7 @@ def transform_operation(op1, op2):
         if op1['position'] < op2['position']:
             op2['position'] -= len(op1['text'])
         elif op1['position'] == op2['position']:
-            op2['text'] = ''  # Both deletions cancel each other
+            op2['text'] = ''
     return op2
 
 def run_http_server():
@@ -288,7 +304,7 @@ def run_http_server():
 async def run_websocket_server():
     async with websockets.serve(handle_connection, 'localhost', 8765):
         print('Starting WebSocket server on port 8765...')
-        await asyncio.Future()  # Run forever
+        await asyncio.Future()
 
 if __name__ == '__main__':
     import threading
