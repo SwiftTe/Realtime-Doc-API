@@ -73,28 +73,41 @@ CREATE TABLE IF NOT EXISTS document_shares (
 )
 ''')
 
+# Create comments table
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS comments (
+    id TEXT PRIMARY KEY,
+    document_id TEXT,
+    user_id TEXT,
+    text TEXT,
+    selection TEXT,  # JSON: {start: 5, end: 10}
+    created_at TEXT,
+    resolved BOOLEAN DEFAULT FALSE
+)
+''')
+
 conn.commit()
 
 # Add a default admin user (for testing)
 cursor.execute('INSERT OR IGNORE INTO users VALUES (?, ?, ?)',
-               ('admin', 'secret1', 'admin'))
+                ('admin', 'secret1', 'admin'))
 
 # Add default permissions (for testing)
 cursor.execute('INSERT OR IGNORE INTO document_permissions VALUES (?, ?, ?)',
-               ('doc1', 'admin', 'edit'))
+                ('doc1', 'admin', 'edit'))
 
 conn.commit()
 
 def create_document(document_id, content):
     cursor.execute('INSERT INTO documents VALUES (?, ?, ?)',
-                   (document_id, content, datetime.now().isoformat()))
+                    (document_id, content, datetime.now().isoformat()))
     conn.commit()
 
 def update_document(document_id, content):
     cursor.execute('UPDATE documents SET content = ? WHERE id = ?',
-                   (content, document_id))
+                    (content, document_id))
     cursor.execute('INSERT INTO document_history (document_id, content, updated_at) VALUES (?, ?, ?)',
-                   (document_id, content, datetime.now().isoformat()))
+                    (document_id, content, datetime.now().isoformat()))
     conn.commit()
 
 def get_document(document_id):
@@ -131,7 +144,7 @@ def set_document_permission(document_id, user_id, permission):
 
 def insert_operation(document_id, operation_type, position, text):
     cursor.execute('INSERT INTO operations (document_id, type, position, text, timestamp) VALUES (?, ?, ?, ?, ?)',
-                   (document_id, operation_type, position, text, datetime.now().isoformat()))
+                    (document_id, operation_type, position, text, datetime.now().isoformat()))
     conn.commit()
 
 def get_operations(document_id):
@@ -140,7 +153,7 @@ def get_operations(document_id):
 
 def create_document_version(document_id, content):
     cursor.execute('INSERT INTO document_versions (document_id, content, created_at) VALUES (?, ?, ?)',
-                   (document_id, content, datetime.now().isoformat()))
+                    (document_id, content, datetime.now().isoformat()))
     conn.commit()
 
 def get_document_versions(document_id):
@@ -159,7 +172,7 @@ def restore_document_version(version_id):
 
 def share_document(document_id, user_id, permission):
     cursor.execute('INSERT INTO document_shares (document_id, user_id, permission) VALUES (?, ?, ?)',
-                   (document_id, user_id, permission))
+                    (document_id, user_id, permission))
     conn.commit()
 
 def get_shared_documents(user_id):
