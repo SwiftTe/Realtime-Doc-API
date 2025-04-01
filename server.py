@@ -6,6 +6,7 @@ from database import create_document, update_document, get_document, get_documen
 import jwt
 from datetime import datetime, timedelta
 import redis
+import uuid
 
 SECRET_KEY = "your-secret-key"
 r = redis.Redis(host='localhost', port=6379, db=1)
@@ -56,6 +57,18 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
             else:
                 self.send_response(401)
                 self.end_headers()
+        elif self.path.endswith('/comments'):
+            data = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            cursor.execute('''
+                INSERT INTO comments (id, document_id, user_id, text, selection, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (str(uuid.uuid4()), data['document_id'], data['user_id'], 
+                 data['text'], json.dumps(data['selection']), datetime.now().isoformat()))
+            conn.commit()
+            self.send_response(201)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'status': 'success'}).encode())
         else:
             user = self.authenticate()
             if not user:
@@ -153,6 +166,14 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps(versions).encode())
+            elif self.path.endswith('/comments'):
+                document_id = self.path.split('/')[-2]
+                cursor.execute('SELECT * FROM comments WHERE document_id = ?', (document_id,))
+                comments = [dict(row) for row in cursor.fetchall()]
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(comments).encode())
             else:
                 if not self.check_permission(user_id, document_id, 'view'):
                     self.send_response(403)
