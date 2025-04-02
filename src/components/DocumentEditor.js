@@ -9,7 +9,7 @@ const CursorOverlay = ({ otherCursors }) => {
         <div
           key={userId}
           className="other-cursor"
-          style={{ position: 'absolute', left: `${position * 8}px`, top: '0px' }} // Adjust styling as needed
+          style={{ position: 'absolute', left: `${position * 8}px`, top: '0px' }}
         >
           {userId}
         </div>
@@ -24,40 +24,57 @@ const DocumentEditor = ({ documentId }) => {
   const [shareEmail, setShareEmail] = useState('');
   const [sharePermission, setSharePermission] = useState('view');
   const [otherCursors, setOtherCursors] = useState({});
+  const [selection, setSelection] = useState(null);
 
   useEffect(() => {
-    // Fetch the document content
-    axios.get(`http://localhost:8000/documents/${documentId}`)
-      .then(response => setContent(response.data.content))
-      .catch(error => console.error(error));
+    const fetchDocument = async () => {
+      try {
+        const response = await axios.get(`http://localhost:8000/documents/${documentId}`);
+        setContent(response.data.content);
+      } catch (error) {
+        console.error('Error fetching document:', error);
+      }
+    };
 
-    // Connect to the WebSocket server
+    fetchDocument();
+
     const ws = new W3CWebSocket(`ws://localhost:8765/${documentId}`);
-    ws.onopen = () => console.log('WebSocket connected');
+
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+    };
+
     ws.onmessage = (message) => {
       const data = JSON.parse(message.data);
       if (data.type === 'operation') {
-        setContent(prevContent => applyOperation(prevContent, data.operation));
+        setContent((prevContent) => applyOperation(prevContent, data.operation));
       } else if (data.type === 'cursor_update') {
-        setOtherCursors(prev => ({
+        setOtherCursors((prev) => ({
           ...prev,
-          [data.user_id]: data.position
+          [data.user_id]: data.position,
         }));
       }
     };
+
     setSocket(ws);
 
-    return () => ws.close();
+    return () => {
+      if (ws && ws.readyState === W3CWebSocket.OPEN) {
+        ws.close();
+      }
+    };
   }, [documentId]);
 
   const handleChange = (e) => {
     const newContent = e.target.value;
     setContent(newContent);
-    if (socket) {
-      socket.send(JSON.stringify({
-        type: 'operation',
-        operation: { type: 'insert', position: newContent.length, text: newContent.slice(-1) }
-      }));
+    if (socket && socket.readyState === W3CWebSocket.OPEN) {
+      socket.send(
+        JSON.stringify({
+          type: 'operation',
+          operation: { type: 'insert', position: newContent.length, text: newContent.slice(-1) },
+        })
+      );
     }
   };
 
@@ -65,7 +82,7 @@ const DocumentEditor = ({ documentId }) => {
     try {
       await axios.post(`http://localhost:8000/documents/${documentId}/share`, {
         user_id: shareEmail,
-        permission: sharePermission
+        permission: sharePermission,
       });
       alert('Document shared successfully!');
       setShareEmail('');
@@ -77,13 +94,31 @@ const DocumentEditor = ({ documentId }) => {
   };
 
   const handleSelectionChange = (e) => {
-    if (socket) {
+    if (socket && socket.readyState === W3CWebSocket.OPEN) {
       const cursorPos = e.target.selectionStart;
-      socket.send(JSON.stringify({
-        type: 'cursor_update',
-        position: cursorPos
-      }));
+      socket.send(
+        JSON.stringify({
+          type: 'cursor_update',
+          position: cursorPos,
+        })
+      );
     }
+  };
+
+  const handleTextSelect = (e) => {
+    setSelection({
+      start: e.target.selectionStart,
+      end: e.target.selectionEnd,
+    });
+  };
+
+  const applyOperation = (prevContent, operation) => {
+      if (operation.type === 'insert') {
+          return prevContent.slice(0, operation.position) + operation.text + prevContent.slice(operation.position);
+      } else if (operation.type === 'delete') {
+          return prevContent.slice(0, operation.position) + prevContent.slice(operation.position + operation.text.length);
+      }
+      return prevContent;
   };
 
   return (
@@ -93,6 +128,7 @@ const DocumentEditor = ({ documentId }) => {
         value={content}
         onChange={handleChange}
         onSelect={handleSelectionChange}
+        onSelect={handleTextSelect}
       />
       <CursorOverlay otherCursors={otherCursors} />
       <div>
@@ -114,5 +150,3 @@ const DocumentEditor = ({ documentId }) => {
 };
 
 export default DocumentEditor;
-
-
