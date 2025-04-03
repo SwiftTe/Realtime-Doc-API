@@ -25,14 +25,25 @@ const DocumentEditor = ({ documentId }) => {
   const [sharePermission, setSharePermission] = useState('view');
   const [otherCursors, setOtherCursors] = useState({});
   const [selection, setSelection] = useState(null);
+  const [comments, setComments] = useState([]);
 
   useEffect(() => {
     const fetchDocument = async () => {
       try {
         const response = await axios.get(`http://localhost:8000/documents/${documentId}`);
         setContent(response.data.content);
+        fetchComments();
       } catch (error) {
         console.error('Error fetching document:', error);
+      }
+    };
+
+    const fetchComments = async () => {
+      try {
+        const response = await axios.get(`http://localhost:8000/documents/${documentId}/comments`);
+        setComments(response.data);
+      } catch (error) {
+        console.error('Error fetching comments:', error);
       }
     };
 
@@ -113,12 +124,31 @@ const DocumentEditor = ({ documentId }) => {
   };
 
   const applyOperation = (prevContent, operation) => {
-      if (operation.type === 'insert') {
-          return prevContent.slice(0, operation.position) + operation.text + prevContent.slice(operation.position);
-      } else if (operation.type === 'delete') {
-          return prevContent.slice(0, operation.position) + prevContent.slice(operation.position + operation.text.length);
-      }
-      return prevContent;
+    if (operation.type === 'insert') {
+      return prevContent.slice(0, operation.position) + operation.text + prevContent.slice(operation.position);
+    } else if (operation.type === 'delete') {
+      return prevContent.slice(0, operation.position) + prevContent.slice(operation.position + operation.text.length);
+    }
+    return prevContent;
+  };
+
+  const renderHighlightedText = (content) => {
+    let result = [];
+    let lastPos = 0;
+
+    comments.forEach((comment) => {
+      const { start, end } = JSON.parse(comment.selection);
+      result.push(content.slice(lastPos, start));
+      result.push(
+        <span className="highlighted-text" key={`highlight-${comment.id}`}>
+          {content.slice(start, end)}
+        </span>
+      );
+      lastPos = end;
+    });
+
+    result.push(content.slice(lastPos));
+    return result;
   };
 
   return (
@@ -128,8 +158,9 @@ const DocumentEditor = ({ documentId }) => {
         value={content}
         onChange={handleChange}
         onSelect={handleSelectionChange}
-        onSelect={handleTextSelect}
+        on Select={handleTextSelect}
       />
+      <div className="document-content">{renderHighlightedText(content)}</div>
       <CursorOverlay otherCursors={otherCursors} />
       <div>
         <h3>Share Document</h3>
