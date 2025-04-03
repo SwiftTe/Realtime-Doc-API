@@ -1,35 +1,48 @@
 .cursor-overlay {
-    position: relative;
-  }
-  
-  .cursor {
-    position: absolute;
-    top: 0;
-    width: 2px;
-    height: 20px;
-    background: red;
-  }
-  
-  .cursor-label {
-    font-size: 12px;
-    background: rgba(255, 0, 0, 0.2);
-    padding: 2px;
-  }
+  position: relative;
+}
 
-  /* App.css */
-  .collaborators {
-    display: flex;
-    gap: 8px;
-    padding: 10px;
-  }
-  
-  .user-avatar {
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: white;
-    font-weight: bold;
-  }
+.cursor {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 20px;
+  background: red;
+}
+
+.cursor-label {
+  font-size: 12px;
+  background: rgba(255, 0, 0, 0.2);
+  padding: 2px;
+}
+
+/* App.css */
+.collaborators {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+}
+
+.user-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: bold;
+}
+
+/* App.css */
+.highlighted-text {
+  background-color: rgba(255, 255, 0, 0.3);
+  position: relative;
+}
+
+.highlighted-text::after {
+  content: '💬';
+  position: absolute;
+  right: -20px;
+  font-size: 12px;
+}
