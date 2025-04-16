@@ -2,11 +2,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import websockets
 import asyncio
-from database import create_document, update_document, get_document, get_document_history, get_user_role, get_user_id_by_api_key, get_document_permission, insert_operation, get_operations, get_document_versions, restore_document_version, create_document_version, share_document, get_shared_documents, conn, cursor
+from database import create_document, update_document, get_document, get_document_history, get_user_role, get_user_id_by_api_key, get_document_permission, insert_operation, get_operations, get_document_versions, restore_document_version, create_document_version, share_document, get_shared_documents, conn, cursor, get_user_by_id
 import jwt
 from datetime import datetime, timedelta
 import redis
 import uuid
+import re
 
 SECRET_KEY = "your-secret-key"
 r = redis.Redis(host='localhost', port=6379, db=1)
@@ -32,8 +33,8 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
             user_data = json.loads(post_data)
-            cursor.execute('INSERT INTO users (username, password) VALUES (?, ?)',
-                           (user_data['username'], user_data['password']))
+            cursor.execute('INSERT INTO users (username, password, email) VALUES (?, ?, ?)',
+                           (user_data['username'], user_data['password'], user_data.get('email')))
             conn.commit()
             self.send_response(201)
             self.end_headers()
@@ -42,14 +43,22 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
             user_data = json.loads(post_data)
-            cursor.execute('SELECT id FROM users WHERE username = ? AND password = ?',
+            cursor.execute('SELECT id, username, email FROM users WHERE username = ? AND password = ?',
                            (user_data['username'], user_data['password']))
             user = cursor.fetchone()
             if user:
+                user_id, username, email = user
                 token = jwt.encode({
-                    'user_id': user[0],
+                    'user_id': user_id,
                     'exp': datetime.utcnow() + timedelta(hours=1)
                 }, SECRET_KEY)
+                # Store user metadata in Redis
+                r.hset('user_metadata', str(user_id), json.dumps({
+                    'name': username,
+                    'email': email,
+                    'avatar': '' # Add logic for avatar URL if available
+                }))
+                r.hset('username_to_id', username, str(user_id))
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
@@ -58,17 +67,23 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
                 self.send_response(401)
                 self.end_headers()
         elif self.path.endswith('/comments'):
-            data = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            user = self.authenticate()
+            if not user:
+                return
+            user_id, _ = user
+            content_length = int(self.headers['Content-Length'])
+            data = json.loads(self.rfile.read(content_length))
+            comment_id = str(uuid.uuid4())
             cursor.execute('''
                 INSERT INTO comments (id, document_id, user_id, text, selection, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (str(uuid.uuid4()), data['document_id'], data['user_id'], 
+            ''', (comment_id, data['document_id'], user_id,
                  data['text'], json.dumps(data['selection']), datetime.now().isoformat()))
             conn.commit()
             self.send_response(201)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({'status': 'success'}).encode())
+            self.wfile.write(json.dumps({'status': 'success', 'comment_id': comment_id}).encode())
         else:
             user = self.authenticate()
             if not user:
@@ -209,6 +224,14 @@ class DocumentAPIHandler(BaseHTTPRequestHandler):
 
 active_users = {}
 
+async def send_notification(user_id, notification):
+    if str(user_id) in active_users:
+        for _, user_data in active_users[str(user_id)].items():
+            try:
+                await user_data['websocket'].send(json.dumps({'type': 'notification', 'payload': notification}))
+            except websockets.exceptions.ConnectionClosed:
+                pass
+
 async def handle_connection(websocket, path):
     api_key = websocket.request_headers.get('X-API-Key')
     user_id = get_user_id_by_api_key(api_key)
@@ -217,6 +240,13 @@ async def handle_connection(websocket, path):
         return
 
     document_id = path.split('/')[-1]
+
+    if str(user_id) not in active_users:
+        active_users[str(user_id)] = {}
+    active_users[str(user_id)][document_id] = {
+        'websocket': websocket,
+        'cursor_pos': 0
+    }
 
     r.sadd(f"doc:{document_id}:users", user_id)
     r.expire(f"doc:{document_id}:users", 30)
@@ -228,14 +258,7 @@ async def handle_connection(websocket, path):
         'users': [uid.decode() for uid in r.smembers(f"doc:{document_id}:users")]
     }, document_id)
 
-    if document_id not in active_users:
-        active_users[document_id] = {}
-    active_users[document_id][user_id] = {
-        'websocket': websocket,
-        'cursor_pos': 0
-    }
-
-    for other_user_id, other_websocket_data in active_users[document_id].items():
+    for other_user_id, other_websocket_data in active_users.get(document_id, {}).items():
         if other_user_id != user_id:
             try:
                 await other_websocket_data['websocket'].send(json.dumps({'type': 'user_joined', 'user_id': user_id}))
@@ -245,39 +268,51 @@ async def handle_connection(websocket, path):
     heartbeat = asyncio.create_task(send_heartbeat(websocket, user_id, document_id))
 
     async for message in websocket:
-        data = json.loads(message)
-        if data.get('type') == 'operation':
-            operation = data.get('operation')
-            existing_ops = get_operations(document_id)
-            for existing_op in existing_ops:
-                operation = transform_operation(operation, existing_op)
-            insert_operation(document_id, operation['type'], operation['position'], operation['text'])
-            for other_user_id, other_websocket_data in active_users[document_id].items():
-                try:
-                    await other_websocket_data['websocket'].send(json.dumps({'type': 'operation', 'operation': operation}))
-                except websockets.exceptions.ConnectionClosed:
-                    pass
-        elif data.get('type') == 'cursor_update':
-            active_users[document_id][user_id]['cursor_pos'] = data['position']
-            for other_user_id, other_websocket_data in active_users[document_id].items():
-                if other_user_id != user_id:
-                    try:
-                        await other_websocket_data['websocket'].send(json.dumps({
-                            'type': 'cursor_update',
-                            'user_id': user_id,
-                            'position': data['position']
-                        }))
-                    except websockets.exceptions.ConnectionClosed:
-                        pass
-
-    del active_users[document_id][user_id]
-    for other_user_id, other_websocket_data in active_users[document_id].items():
         try:
-            await other_websocket_data['websocket'].send(json.dumps({'type': 'user_left', 'user_id': user_id}))
-        except websockets.exceptions.ConnectionClosed:
-            pass
+            data = json.loads(message)
+            if data.get('type') == 'operation':
+                operation = data.get('operation')
+                existing_ops = get_operations(document_id)
+                for existing_op in existing_ops:
+                    operation = transform_operation(operation, existing_op)
+                insert_operation(document_id, operation['type'], operation['position'], operation['text'])
+                await broadcast({'type': 'operation', 'operation': operation}, document_id)
+            elif data.get('type') == 'cursor_update':
+                active_users[str(user_id)][document_id]['cursor_pos'] = data['position']
+                await broadcast({
+                    'type': 'cursor_update',
+                    'user_id': user_id,
+                    'position': data['position']
+                }, document_id)
+            elif data.get('type') == 'new_comment':
+                comment_data = data.get('comment')
+                mentioned_users = re.findall(r'@(\w+)', comment_data.get('text', ''))
+                for username in mentioned_users:
+                    mentioned_user_id = r.hget('username_to_id', username)
+                    if mentioned_user_id:
+                        doc_title = get_document(document_id).get('title', 'Untitled Document') # Assuming get_document returns a dict with title
+                        await send_notification(mentioned_user_id.decode(), {
+                            'type': 'mention',
+                            'comment_id': comment_data.get('id'),
+                            'document_title': doc_title
+                        })
+                await broadcast({'type': 'new_comment', 'comment': comment_data}, document_id)
+            elif data.get('type') == 'resolve_comment':
+                comment_id = data.get('comment_id')
+                # You might want to update the comment status in the database as well
+                await broadcast({'type': 'comment_resolved', 'comment_id': comment_id}, document_id)
+        except websockets.exceptions.ConnectionClosedError:
+            break
+        except json.JSONDecodeError:
+            print(f"Received invalid JSON: {message}")
+        except Exception as e:
+            print(f"Error handling message: {e}")
 
-    heartbeat.cancel()
+    if str(user_id) in active_users and document_id in active_users[str(user_id)]:
+        del active_users[str(user_id)][document_id]
+        if not active_users[str(user_id)]:
+            del active_users[str(user_id)]
+
     r.srem(f"doc:{document_id}:users", user_id)
     await broadcast({
         'type': 'presence',
@@ -286,6 +321,8 @@ async def handle_connection(websocket, path):
         'users': [uid.decode() for uid in r.smembers(f"doc:{document_id}:users")]
     }, document_id)
 
+    heartbeat.cancel()
+
 async def send_heartbeat(websocket, user_id, doc_id):
     while True:
         await asyncio.sleep(20)
@@ -293,7 +330,7 @@ async def send_heartbeat(websocket, user_id, doc_id):
         r.expire(f"doc:{doc_id}:users", 30)
 
 async def broadcast(message, document_id):
-    for user_id, user_data in active_users[document_id].items():
+    for user_id, user_data in active_users.get(document_id, {}).items():
         try:
             await user_data['websocket'].send(json.dumps(message))
         except websockets.exceptions.ConnectionClosed:
