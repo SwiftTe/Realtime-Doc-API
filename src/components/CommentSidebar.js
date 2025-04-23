@@ -5,6 +5,12 @@ import { w3cwebsocket as W3CWebSocket } from 'websocket';
 const CommentSidebar = ({ documentId, selection }) => {
   const [comments, setComments] = useState([]);
   const [newComment, setNewComment] = useState('');
+  const [users, setUsers] = useState([]);
+  const [showMentionAutocomplete, setShowMentionAutocomplete] = useState(false);
+
+  useEffect(() => {
+    axios.get('/api/users').then((res) => setUsers(res.data));
+  }, []);
 
   const fetchComments = async () => {
     try {
@@ -22,6 +28,7 @@ const CommentSidebar = ({ documentId, selection }) => {
         selection: { start: selection.start, end: selection.end },
       });
       setNewComment('');
+      setShowMentionAutocomplete(false);
       fetchComments();
     } catch (error) {
       console.error('Error adding comment:', error);
@@ -64,19 +71,75 @@ const CommentSidebar = ({ documentId, selection }) => {
     };
   }, [documentId]);
 
+  const handleCommentChange = (text) => {
+    if (text.endsWith('@')) {
+      setShowMentionAutocomplete(true);
+    } else {
+      setShowMentionAutocomplete(false);
+    }
+    setNewComment(text);
+  };
+
   return (
     <div className="comment-sidebar">
       {comments.map((comment) => (
-        <div key={comment.id} className="comment">
+        <div key={comment.id} className={`comment ${comment.resolved ? 'resolved' : ''}`}>
           <p>{comment.text}</p>
           <small>By User {comment.user_id}</small>
-          <button onClick={() => resolveComment(comment.id)}>Resolve</button>
+          {!comment.resolved && (
+            <button className="resolve-btn" onClick={() => resolveComment(comment.id)}>
+              Resolve
+            </button>
+          )}
         </div>
       ))}
-      <textarea value={newComment} onChange={(e) => setNewComment(e.target.value)} />
+      <textarea value={newComment} onChange={(e) => handleCommentChange(e.target.value)} />
+      {showMentionAutocomplete && (
+        <MentionAutocomplete
+          users={users}
+          onSelect={(mention) => {
+            setNewComment(newComment.slice(0, -1) + mention + ' ');
+            setShowMentionAutocomplete(false);
+          }}
+        />
+      )}
       <button onClick={addComment}>Add Comment</button>
     </div>
   );
 };
 
+// Dummy MentionAutocomplete component - replace with your actual implementation
+const MentionAutocomplete = ({ users, onSelect }) => {
+  const [searchTerm, setSearchTerm] = useState('');
+  const filteredUsers = users.filter((user) =>
+    user.username.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  return (
+    <div className="mention-autocomplete">
+      <input
+        type="text"
+        placeholder="Search users..."
+        onChange={(e) => setSearchTerm(e.target.value)}
+      />
+      <ul>
+        {filteredUsers.map((user) => (
+          <li key={user.id} onClick={() => onSelect(`@${user.username}`)}>
+            {user.username} ({user.email})
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
 export default CommentSidebar;
+
+// Request Notification Permissions (place this outside the component)
+if (typeof Notification !== 'undefined') {
+  Notification.requestPermission().then((perm) => {
+    if (perm === 'granted') {
+      localStorage.setItem('notifications_enabled', 'true');
+    }
+  });
+}
