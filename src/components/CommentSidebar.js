@@ -7,10 +7,15 @@ const CommentSidebar = ({ documentId, selection }) => {
   const [newComment, setNewComment] = useState('');
   const [users, setUsers] = useState([]);
   const [showMentionAutocomplete, setShowMentionAutocomplete] = useState(false);
+  const [newCommentId, setNewCommentId] = useState(null); // To store the ID of the newly added comment
 
   useEffect(() => {
     axios.get('/api/users').then((res) => setUsers(res.data));
   }, []);
+
+  const getDocumentUrl = (commentId) => {
+    return `${window.location.origin}/documents/${documentId}#comment-${commentId}`;
+  };
 
   const fetchComments = async () => {
     try {
@@ -23,12 +28,13 @@ const CommentSidebar = ({ documentId, selection }) => {
 
   const addComment = async () => {
     try {
-      await axios.post(`http://localhost:8000/documents/${documentId}/comments`, {
+      const res = await axios.post(`http://localhost:8000/documents/${documentId}/comments`, {
         text: newComment,
         selection: { start: selection.start, end: selection.end },
       });
       setNewComment('');
       setShowMentionAutocomplete(false);
+      setNewCommentId(res.data.comment_id); // Store the ID of the newly created comment
       fetchComments();
     } catch (error) {
       console.error('Error adding comment:', error);
@@ -83,7 +89,7 @@ const CommentSidebar = ({ documentId, selection }) => {
   return (
     <div className="comment-sidebar">
       {comments.map((comment) => (
-        <div key={comment.id} className={`comment ${comment.resolved ? 'resolved' : ''}`}>
+        <div key={comment.id} id={`comment-${comment.id}`} className={`comment ${comment.resolved ? 'resolved' : ''}`}>
           <p>{comment.text}</p>
           <small>By User {comment.user_id}</small>
           {!comment.resolved && (
