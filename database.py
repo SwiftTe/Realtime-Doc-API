@@ -29,7 +29,10 @@ cursor.execute('''
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     api_key TEXT,
-    role TEXT
+    role TEXT,
+    username TEXT UNIQUE,
+    password TEXT,
+    email TEXT UNIQUE
 )
 ''')
 
@@ -86,11 +89,20 @@ CREATE TABLE IF NOT EXISTS comments (
 )
 ''')
 
+# Create user_preferences table
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS user_preferences (
+    user_id TEXT PRIMARY KEY,
+    email_notifications BOOLEAN DEFAULT TRUE,
+    notification_sound BOOLEAN DEFAULT TRUE
+)
+''')
+
 conn.commit()
 
 # Add a default admin user (for testing)
-cursor.execute('INSERT OR IGNORE INTO users VALUES (?, ?, ?)',
-                ('admin', 'secret1', 'admin'))
+cursor.execute('INSERT OR IGNORE INTO users (id, api_key, role, username, password, email) VALUES (?, ?, ?, ?, ?, ?)',
+                ('admin', 'secret1', 'admin', 'admin', 'password', 'admin@example.com'))
 
 # Add default permissions (for testing)
 cursor.execute('INSERT OR IGNORE INTO document_permissions VALUES (?, ?, ?)',
@@ -124,14 +136,19 @@ def get_user_role(api_key):
     row = cursor.fetchone()
     return row[0] if row else None
 
-def create_user(user_id, api_key, role):
-    cursor.execute('INSERT OR IGNORE INTO users VALUES (?, ?, ?)',(user_id, api_key, role))
+def create_user(user_id, api_key, role, username, password, email):
+    cursor.execute('INSERT OR IGNORE INTO users (id, api_key, role, username, password, email) VALUES (?, ?, ?, ?, ?, ?)',(user_id, api_key, role, username, password, email))
     conn.commit()
 
 def get_user_id_by_api_key(api_key):
     cursor.execute('SELECT id FROM users WHERE api_key = ?', (api_key,))
     row = cursor.fetchone()
     return row[0] if row else None
+
+def get_user_by_id(user_id):
+    cursor.execute('SELECT id, username, email FROM users WHERE id = ?', (user_id,))
+    row = cursor.fetchone()
+    return {'id': row[0], 'username': row[1], 'email': row[2]} if row else None
 
 def get_document_permission(document_id, user_id):
     cursor.execute('SELECT permission FROM document_permissions WHERE document_id = ? AND user_id = ?', (document_id, user_id))
@@ -178,3 +195,20 @@ def share_document(document_id, user_id, permission):
 def get_shared_documents(user_id):
     cursor.execute('SELECT document_id, permission FROM document_shares WHERE user_id = ?', (user_id,))
     return cursor.fetchall()
+
+def get_user_preferences(user_id):
+    cursor.execute('SELECT email_notifications, notification_sound FROM user_preferences WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    if row:
+        return {'email_notifications': bool(row[0]), 'notification_sound': bool(row[1])}
+    else:
+        # Create default preferences if they don't exist
+        cursor.execute('INSERT OR IGNORE INTO user_preferences (user_id) VALUES (?)', (user_id,))
+        conn.commit()
+        return {'email_notifications': True, 'notification_sound': True}
+
+def set_user_preferences(user_id, email_notifications, notification_sound):
+    cursor.execute('INSERT OR REPLACE INTO user_preferences (user_id, email_notifications, notification_sound) VALUES (?, ?, ?)',
+                    (user_id, int(email_notifications), int(notification_sound)))
+    conn.commit()
+    
